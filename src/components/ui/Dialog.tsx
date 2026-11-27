@@ -6,9 +6,13 @@ interface DialogProps {
   onClose: () => void;
   title: string;
   subtitle?: string;
+  headerActions?: React.ReactNode;
   headerExtra?: React.ReactNode;
+  footer?: React.ReactNode;
   maxWidthClass?: string;
   fullScreenOnMobile?: boolean;
+  titleSizeClass?: string;
+  bodyRef?: React.RefObject<HTMLDivElement | null>;
   children: React.ReactNode;
 }
 
@@ -17,9 +21,13 @@ export function Dialog({
   onClose,
   title,
   subtitle,
+  headerActions,
   headerExtra,
+  footer,
   maxWidthClass = 'max-w-lg',
   fullScreenOnMobile = false,
+  titleSizeClass = 'text-base font-semibold',
+  bodyRef,
   children,
 }: DialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -78,8 +86,8 @@ export function Dialog({
   }
 
   const sizeClasses = fullScreenOnMobile
-    ? `m-0 h-dvh max-h-dvh w-full max-w-none rounded-none border-0 sm:m-auto sm:h-auto sm:max-h-[88dvh] sm:w-[calc(100%-2rem)] ${maxWidthClass} sm:rounded-xl sm:border`
-    : `m-auto w-[calc(100%-2rem)] ${maxWidthClass} max-h-[88dvh] rounded-xl border`;
+    ? `m-0 h-dvh max-h-dvh w-full max-w-none rounded-none border-0 sm:m-auto sm:h-auto sm:max-h-[90vh] sm:w-[calc(100%-2rem)] ${maxWidthClass} sm:rounded-2xl sm:border`
+    : `m-auto w-[calc(100%-2rem)] ${maxWidthClass} max-h-[90vh] rounded-2xl border`;
 
   return (
     <dialog
@@ -87,29 +95,46 @@ export function Dialog({
       aria-labelledby={titleId}
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
-      className={`${sizeClasses} border-slate-200 bg-white p-0 text-slate-900 shadow-xl transition-opacity duration-150 ease-out dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100`}
+      className={`${sizeClasses} border-slate-200 bg-white p-0 text-slate-900 shadow-xl dark:border-slate-800 dark:bg-slate-900 dark:text-slate-100`}
     >
       <div className="flex h-full max-h-[inherit] flex-col">
-        <header className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-slate-200 bg-white px-5 py-4 dark:border-slate-800 dark:bg-slate-900">
-          <div className="min-w-0 flex-1">
-            <h1 id={titleId} className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100">
-              {title}
-            </h1>
-            {subtitle && (
-              <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">{subtitle}</p>
-            )}
-            {headerExtra && <div className="mt-2">{headerExtra}</div>}
+        <header className="sticky top-0 z-20 shrink-0 border-b border-slate-200 bg-white px-6 py-5 sm:px-8 dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <h1
+                id={titleId}
+                className={`${titleSizeClass} tracking-tight text-slate-900 dark:text-slate-100`}
+              >
+                {title}
+              </h1>
+              {subtitle && (
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{subtitle}</p>
+              )}
+            </div>
+            <div className="no-print flex shrink-0 items-center gap-1">
+              {headerActions}
+              <button
+                type="button"
+                onClick={() => dialogRef.current?.close()}
+                aria-label="Close dialog"
+                className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-500 transition-colors duration-150 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 sm:min-h-[36px] sm:min-w-[36px] dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
           </div>
-          <button
-            type="button"
-            onClick={() => dialogRef.current?.close()}
-            aria-label="Close dialog"
-            className="-mr-2 -mt-1 inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg text-slate-500 transition-colors duration-150 hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-          >
-            <X className="h-4 w-4" />
-          </button>
+          {headerExtra && <div className="mt-2.5">{headerExtra}</div>}
         </header>
-        <div className="flex-1 overflow-y-auto px-5 py-4">{children}</div>
+
+        <div ref={bodyRef} className="flex-1 overflow-y-auto px-6 py-6 sm:px-8">
+          {children}
+        </div>
+
+        {footer && (
+          <footer className="no-print sticky bottom-0 z-20 shrink-0 border-t border-slate-200 bg-white px-6 py-3.5 sm:px-8 dark:border-slate-800 dark:bg-slate-900">
+            {footer}
+          </footer>
+        )}
       </div>
     </dialog>
   );

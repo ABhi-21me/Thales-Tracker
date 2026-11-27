@@ -152,10 +152,23 @@ function AppShell() {
         return;
       }
 
-      setMeetings((mRes.data as Meeting[]) ?? []);
+      const loadedMeetings = (mRes.data as Meeting[]) ?? [];
+      setMeetings(loadedMeetings);
       setActionItems((aRes.data as ActionItem[]) ?? []);
       setContacts((cRes.data as ContactType[]) ?? []);
       setResources((rRes.data as Resource[]) ?? []);
+
+      const params = new URLSearchParams(window.location.search);
+      const deepLinkId = params.get('meeting');
+      if (deepLinkId) {
+        const match = loadedMeetings.find((m) => m.id === deepLinkId);
+        if (match) {
+          setModalMeeting(match);
+          setModalMode('view');
+          setModalOpen(true);
+          window.history.replaceState({}, '', window.location.pathname);
+        }
+      }
     } catch {
       setFetchError('Network error while loading project data.');
     } finally {
@@ -189,7 +202,6 @@ function AppShell() {
   };
 
   const handleDeleteMeeting = async (meeting: Meeting) => {
-    if (!window.confirm(`Delete meeting "${meeting.title}"?`)) return;
     const { error } = await supabase.from('meetings').delete().eq('id', meeting.id);
     if (error) {
       showToast(error.message, 'error');
@@ -419,11 +431,14 @@ function AppShell() {
           setModalMeeting(null);
         }}
         meeting={modalMeeting}
+        meetings={meetings}
+        contacts={contacts}
         initialMode={modalMode}
         defaultDate={defaultMeetingDate}
         resources={resources}
         actionItems={actionItems}
         isAdmin={isAdmin}
+        onSelectMeeting={openMeetingView}
         onSaved={loadData}
         onDelete={handleDeleteMeeting}
       />

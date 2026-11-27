@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   AlertCircle,
-  Calendar,
+  Check,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   Copy,
   ExternalLink,
@@ -13,16 +15,17 @@ import {
   FolderOpen,
   Globe,
   Link2,
-  MapPin,
+  ListTodo,
   Pencil,
   Plus,
   Presentation,
+  Printer,
   Trash2,
-  Users,
   Video,
 } from 'lucide-react';
 import type {
   ActionItem,
+  Contact,
   Meeting,
   MeetingMode,
   MeetingStatus,
@@ -49,14 +52,19 @@ interface MeetingModalProps {
   open: boolean;
   onClose: () => void;
   meeting: Meeting | null;
+  meetings: Meeting[];
+  contacts: Contact[];
   initialMode?: 'view' | 'edit';
   defaultDate?: string;
   resources: Resource[];
   actionItems: ActionItem[];
   isAdmin: boolean;
+  onSelectMeeting: (meeting: Meeting) => void;
   onSaved: () => void;
-  onDelete: (meeting: Meeting) => void;
+  onDelete: (meeting: Meeting) => Promise<void> | void;
 }
+
+type SectionKey = 'overview' | 'mom' | 'resources' | 'actions';
 
 const RESOURCE_ICON: Record<ResourceType, typeof FileText> = {
   recording: Video,
@@ -66,20 +74,94 @@ const RESOURCE_ICON: Record<ResourceType, typeof FileText> = {
   other: Link2,
 };
 
+function getInitials(name: string): string {
+  const cleaned = name.replace(/^(dr\.|prof\.|mr\.|ms\.|mrs\.)\s+/i, '').trim();
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+function stripMarkdownToPlainText(md: string): string {
+  return md
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '$1 ($2)')
+    .replace(/^\s*[-*+]\s+/gm, '• ')
+    .trim();
+}
+
+function splitMomDecisions(md: string): {
+  decisionsHeading: string | null;
+  decisionsItems: string[];
+  restMarkdown: string;
+} {
+  const lines = md.split(/\r?\n/);
+  let inDecisions = false;
+  let decisionsHeading: string | null = null;
+  const decisionsItems: string[] = [];
+  const restLines: string[] = [];
+
+  for (const line of lines) {
+    const headingMatch = line.match(/^#{1,4}\s+(.*)$/);
+    if (headingMatch) {
+      const headingText = headingMatch[1].trim();
+      if (/^(key\s+)?decisions$/i.test(headingText)) {
+        inDecisions = true;
+        decisionsHeading = headingText;
+        continue;
+      } else {
+        inDecisions = false;
+      }
+    }
+
+    if (inDecisions) {
+      const bulletMatch = line.match(/^\s*[-*+]\s+(.*)$/);
+      if (bulletMatch) {
+        decisionsItems.push(bulletMatch[1].trim());
+      } else if (line.trim()) {
+        decisionsItems.push(line.trim());
+      }
+    } else {
+      restLines.push(line);
+    }
+  }
+
+  return {
+    decisionsHeading,
+    decisionsItems,
+    restMarkdown: restLines.join('\n').trim(),
+  };
+}
+
 export function MeetingModal({
   open,
   onClose,
   meeting,
+  meetings,
+  contacts,
   initialMode = 'view',
   defaultDate,
   resources,
   actionItems,
   isAdmin,
+  onSelectMeeting,
   onSaved,
   onDelete,
 }: MeetingModalProps) {
   const { showToast } = useToast();
   const [modeView, setModeView] = useState<'view' | 'edit'>(initialMode);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [activeSection, setActiveSection] = useState<SectionKey>('overview');
+
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const overviewRef = useRef<HTMLElement>(null);
+  const momRef = useRef<HTMLElement>(null);
+  const resourcesRef = useRef<HTMLElement>(null);
+  const actionsRef = useRef<HTMLElement>(null);
 
   // Form state
   const [title, setTitle] = useState('');
@@ -99,6 +181,21 @@ export function MeetingModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const sortedMeetings = useMemo(
+    () => [...meetings].sort((a, b) => a.meeting_date.localeCompare(b.meeting_date)),
+    [meetings]
+  );
+
+  const currentIdx = useMemo(
+    () => (meeting ? sortedMeetings.findIndex((m) => m.id === meeting.id) : -1),
+    [meeting, sortedMeetings]
+  );
+  const prevMeeting = currentIdx > 0 ? sortedMeetings[currentIdx - 1] : null;
+  const nextMeeting =
+    currentIdx >= 0 && currentIdx < sortedMeetings.length - 1
+      ? sortedMeetings[currentIdx + 1]
+      : null;
+
   const meetingResources = useMemo(
     () => (meeting ? resources.filter((r) => r.meeting_id === meeting.id) : []),
     [meeting, resources]
@@ -109,11 +206,40 @@ export function MeetingModal({
     [meeting, actionItems]
   );
 
+  const openActionCount = useMemo(
+    () => meetingActionItems.filter((a) => a.status === 'open').length,
+    [meetingActionItems]
+  );
+
+  const parsedMom = useMemo(() => {
+    if (!meeting?.mom) return null;
+    return splitMomDecisions(meeting.mom);
+  }, [meeting?.mom]);
+
+  const matchContact = (attendeeName: string): Contact | undefined => {
+    const clean = attendeeName
+      .replace(/\(.*?\)/g, '')
+      .replace(/^(dr\.|prof\.|mr\.|ms\.|mrs\.)\s+/i, '')
+      .trim()
+      .toLowerCase();
+    if (!clean) return undefined;
+    return contacts.find((c) => {
+      const cClean = c.name
+        .replace(/^(dr\.|prof\.|mr\.|ms\.|mrs\.)\s+/i, '')
+        .trim()
+        .toLowerCase();
+      return cClean === clean || cClean.includes(clean) || clean.includes(cClean);
+    });
+  };
+
   useEffect(() => {
     if (!open) return;
     setError(null);
+    setConfirmDeleteOpen(false);
     setMomTab('write');
+    setActiveSection('overview');
     setModeView(meeting ? (isAdmin ? initialMode : 'view') : 'edit');
+    if (bodyRef.current) bodyRef.current.scrollTop = 0;
 
     if (meeting) {
       setTitle(meeting.title);
@@ -163,13 +289,56 @@ export function MeetingModal({
     }
   }, [open, meeting, initialMode, defaultDate, isAdmin, resources]);
 
-  const handleCopy = async (link: string) => {
+  // Track active section on scroll
+  useEffect(() => {
+    const container = bodyRef.current;
+    if (!open || modeView !== 'view' || !container) return;
+
+    const handleScroll = () => {
+      const top = container.getBoundingClientRect().top + 88;
+      const sections: Array<{ key: SectionKey; el: HTMLElement | null }> = [
+        { key: 'actions', el: actionsRef.current },
+        { key: 'resources', el: resourcesRef.current },
+        { key: 'mom', el: momRef.current },
+        { key: 'overview', el: overviewRef.current },
+      ];
+      for (const sec of sections) {
+        if (sec.el && sec.el.getBoundingClientRect().top <= top) {
+          setActiveSection(sec.key);
+          return;
+        }
+      }
+      setActiveSection('overview');
+    };
+
+    container.addEventListener('scroll', handleScroll, { passive: true });
+    return () => container.removeEventListener('scroll', handleScroll);
+  }, [open, modeView]);
+
+  const scrollToSection = (key: SectionKey) => {
+    setActiveSection(key);
+    const map: Record<SectionKey, HTMLElement | null> = {
+      overview: overviewRef.current,
+      mom: momRef.current,
+      resources: resourcesRef.current,
+      actions: actionsRef.current,
+    };
+    map[key]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const handleCopyText = async (text: string, label: string) => {
     try {
-      await navigator.clipboard.writeText(link);
-      showToast('Link copied to clipboard', 'success');
+      await navigator.clipboard.writeText(text);
+      showToast(`${label} copied to clipboard`, 'success');
     } catch {
-      showToast('Could not copy link', 'error');
+      showToast(`Could not copy ${label.toLowerCase()}`, 'error');
     }
+  };
+
+  const handleCopyMeetingLink = () => {
+    if (!meeting) return;
+    const url = `${window.location.origin}${window.location.pathname}?meeting=${meeting.id}`;
+    handleCopyText(url, 'Meeting link');
   };
 
   const addResourceRow = () => {
@@ -339,6 +508,7 @@ export function MeetingModal({
 
   const weekday = meeting ? getWeekdayName(meeting.meeting_date, false) : '';
   const formattedDate = meeting ? formatDisplayDate(meeting.meeting_date) : '';
+  const modeLabel = meeting ? `${meeting.mode[0].toUpperCase()}${meeting.mode.slice(1)}` : '';
 
   const modalTitle =
     modeView === 'edit'
@@ -349,63 +519,140 @@ export function MeetingModal({
 
   const modalSubtitle =
     modeView === 'view' && meeting
-      ? `${weekday}, ${formattedDate}`
+      ? `${weekday}, ${formattedDate} · ${modeLabel}`
       : 'Weekday is derived automatically from the date';
+
+  const headerActions =
+    modeView === 'view' && meeting ? (
+      <>
+        <button
+          type="button"
+          disabled={!prevMeeting}
+          onClick={() => prevMeeting && onSelectMeeting(prevMeeting)}
+          aria-label="Previous meeting"
+          title={prevMeeting ? `Previous: ${prevMeeting.title}` : 'No earlier meeting'}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 disabled:opacity-30 sm:min-h-[36px] sm:min-w-[36px] dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+        >
+          <ChevronLeft className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          disabled={!nextMeeting}
+          onClick={() => nextMeeting && onSelectMeeting(nextMeeting)}
+          aria-label="Next meeting"
+          title={nextMeeting ? `Next: ${nextMeeting.title}` : 'No later meeting'}
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 disabled:opacity-30 sm:min-h-[36px] sm:min-w-[36px] dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={handleCopyMeetingLink}
+          aria-label="Copy link to meeting"
+          title="Copy meeting link"
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 sm:min-h-[36px] sm:min-w-[36px] dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+        >
+          <Link2 className="h-4 w-4" />
+        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setModeView('edit')}
+            aria-label="Edit meeting"
+            className="hidden min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 sm:inline-flex dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+            Edit
+          </button>
+        )}
+      </>
+    ) : undefined;
+
+  const adminFooter =
+    modeView === 'view' && meeting && isAdmin ? (
+      <div className="flex items-center justify-between gap-2">
+        {confirmDeleteOpen ? (
+          <div className="flex w-full flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-medium text-red-700 dark:text-red-400">
+              Delete this meeting permanently?
+            </span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={() => setConfirmDeleteOpen(false)}
+                className="min-h-[40px] rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  try {
+                    await onDelete(meeting);
+                  } finally {
+                    setDeleting(false);
+                    setConfirmDeleteOpen(false);
+                  }
+                }}
+                className="min-h-[40px] rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-60"
+              >
+                {deleting ? 'Deleting...' : 'Confirm delete'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setConfirmDeleteOpen(true)}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-red-200 px-3.5 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/40"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              Delete
+            </button>
+            <button
+              type="button"
+              onClick={() => setModeView('edit')}
+              className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg bg-blue-700 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:bg-blue-600 dark:hover:bg-blue-500"
+            >
+              <Pencil className="h-3.5 w-3.5" />
+              Edit
+            </button>
+          </>
+        )}
+      </div>
+    ) : undefined;
 
   return (
     <Dialog
       open={open}
       onClose={onClose}
       fullScreenOnMobile
-      maxWidthClass="max-w-[900px]"
+      maxWidthClass="max-w-3xl"
+      titleSizeClass="text-xl sm:text-2xl font-semibold leading-snug"
       title={modalTitle}
       subtitle={modalSubtitle}
+      headerActions={headerActions}
+      bodyRef={bodyRef}
+      footer={adminFooter}
       headerExtra={
         modeView === 'view' && meeting ? (
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-1.5">
-              <Badge variant={meeting.status}>{meeting.status}</Badge>
-              <Badge variant="neutral">
-                {meeting.mode === 'online' ? (
-                  <Video className="h-3 w-3" />
-                ) : (
-                  <MapPin className="h-3 w-3" />
-                )}
-                {meeting.mode}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Badge variant={meeting.status}>{meeting.status}</Badge>
+            {meeting.was_successful === true && (
+              <Badge variant="done">
+                <CheckCircle2 className="h-3 w-3" />
+                Successful
               </Badge>
-              {meeting.was_successful === true && (
-                <Badge variant="done">
-                  <CheckCircle2 className="h-3 w-3" />
-                  Successful
-                </Badge>
-              )}
-              {meeting.was_successful === false && (
-                <Badge variant="overdue">
-                  <AlertCircle className="h-3 w-3" />
-                  Not successful
-                </Badge>
-              )}
-            </div>
-
-            {isAdmin && (
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setModeView('edit')}
-                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                >
-                  <Pencil className="h-3.5 w-3.5" />
-                  Edit
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onDelete(meeting)}
-                  className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-red-200 px-3 py-1 text-xs font-medium text-red-700 hover:bg-red-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-600 dark:border-red-900/60 dark:text-red-400 dark:hover:bg-red-950/40"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Delete
-                </button>
-              </div>
+            )}
+            {meeting.was_successful === false && (
+              <Badge variant="overdue">
+                <AlertCircle className="h-3 w-3" />
+                Not successful
+              </Badge>
             )}
           </div>
         ) : undefined
@@ -413,106 +660,257 @@ export function MeetingModal({
     >
       {modeView === 'view' && meeting ? (
         <div className="space-y-6">
-          {/* Meta grid */}
-          <div className="grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 text-xs dark:border-slate-800 dark:bg-slate-800/40 sm:grid-cols-2">
-            <div className="flex items-start gap-2">
-              <Calendar className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
-              <div>
-                <p className="font-medium text-slate-500 dark:text-slate-400">Date</p>
-                <p className="tabular-nums text-slate-900 dark:text-slate-100">
-                  {weekday}, {formattedDate}
-                </p>
-              </div>
+          {/* At a glance strip */}
+          <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Attendees</p>
+              <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                {meeting.attendees.length}{' '}
+                <span className="font-normal text-slate-500 dark:text-slate-400">
+                  {meeting.attendees.length === 1 ? 'person' : 'people'}
+                </span>
+              </p>
             </div>
-            <div className="flex items-start gap-2">
-              <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
-              <div>
-                <p className="font-medium text-slate-500 dark:text-slate-400">Attendees</p>
-                <p className="text-slate-900 dark:text-slate-100">
-                  {meeting.attendees.length > 0 ? meeting.attendees.join(', ') : 'None listed'}
-                </p>
-              </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Resources</p>
+              <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                {meetingResources.length}{' '}
+                <span className="font-normal text-slate-500 dark:text-slate-400">
+                  {meetingResources.length === 1 ? 'file' : 'files'}
+                </span>
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Open tasks</p>
+              <p className="mt-0.5 text-sm font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                {openActionCount}{' '}
+                <span className="font-normal text-slate-500 dark:text-slate-400">
+                  of {meetingActionItems.length}
+                </span>
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
+              <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Outcome</p>
+              <p className="mt-0.5 flex items-center gap-1 text-sm font-semibold text-slate-900 dark:text-slate-100">
+                {meeting.was_successful === true ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    Success
+                  </span>
+                ) : meeting.was_successful === false ? (
+                  <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    Not successful
+                  </span>
+                ) : (
+                  <span className="text-slate-500 dark:text-slate-400">Pending</span>
+                )}
+              </p>
             </div>
           </div>
 
-          {/* What happened & Planned next */}
-          <div className="grid grid-cols-1 gap-5 md:grid-cols-2">
-            <div className="space-y-1.5">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          {/* Sticky Section Nav */}
+          <nav
+            aria-label="Meeting sections"
+            className="no-print sticky -top-6 z-10 -mx-6 flex items-center gap-1.5 overflow-x-auto border-b border-slate-100 bg-white/95 px-6 py-2.5 backdrop-blur-xs sm:-mx-8 sm:px-8 dark:border-slate-800 dark:bg-slate-900/95"
+          >
+            {(
+              [
+                { key: 'overview', label: 'Overview' },
+                { key: 'mom', label: 'MoM' },
+                { key: 'resources', label: `Resources (${meetingResources.length})` },
+                { key: 'actions', label: `Actions (${meetingActionItems.length})` },
+              ] as const
+            ).map((item) => {
+              const active = activeSection === item.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => scrollToSection(item.key)}
+                  className={`min-h-[34px] shrink-0 rounded-full px-3 py-1 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 ${
+                    active
+                      ? 'bg-blue-700 text-white dark:bg-blue-600'
+                      : 'bg-slate-100 text-slate-700 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Overview: Attendees, What happened, Next steps */}
+          <section ref={overviewRef} id="sec-overview" className="scroll-mt-14 space-y-6">
+            <div>
+              <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
+                Attendees
+              </h2>
+              {meeting.attendees.length === 0 ? (
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  No attendees recorded.
+                </p>
+              ) : (
+                <div className="mt-2.5 flex flex-wrap gap-2">
+                  {meeting.attendees.map((person) => {
+                    const matched = matchContact(person);
+                    return (
+                      <div
+                        key={person}
+                        className="inline-flex items-center gap-2.5 rounded-full border border-slate-200 bg-slate-50/80 py-1.5 pl-1.5 pr-3.5 dark:border-slate-700 dark:bg-slate-800/60"
+                      >
+                        <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-700/10 text-[11px] font-semibold text-blue-800 dark:bg-blue-500/20 dark:text-blue-300">
+                          {getInitials(person)}
+                        </span>
+                        <div className="leading-tight">
+                          <p className="text-xs font-medium text-slate-900 dark:text-slate-100">
+                            {person}
+                          </p>
+                          {matched && (
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                              {matched.role}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t border-slate-200 pt-6 dark:border-slate-800">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
                 What happened
               </h2>
-              <p className="text-sm leading-relaxed text-slate-800 dark:text-slate-200">
-                {meeting.what_happened || 'No summary recorded yet.'}
-              </p>
+              <div className="mom-prose mt-2 text-slate-800 dark:text-slate-200">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {meeting.what_happened || 'No summary recorded yet.'}
+                </ReactMarkdown>
+              </div>
             </div>
 
-            <div className="space-y-1.5">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Planned next
+            <div className="border-l-2 border-blue-700 pl-4 dark:border-blue-500">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-blue-700 dark:text-blue-400">
+                Next steps
               </h2>
-              <p className="text-sm leading-relaxed text-slate-800 dark:text-slate-200">
-                {meeting.planned_next || 'No next steps recorded.'}
-              </p>
+              <div className="mom-prose mt-1.5 text-slate-800 dark:text-slate-200">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {meeting.planned_next || 'No next steps recorded.'}
+                </ReactMarkdown>
+              </div>
             </div>
-          </div>
+          </section>
 
-          {/* Outcome: MoM or Reason */}
-          {meeting.was_successful === true && meeting.mom && (
-            <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950/60">
-              <div className="flex items-center justify-between gap-2">
-                <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                  Minutes of Meeting (MoM)
-                </h2>
+          {/* Minutes of Meeting / Outcome */}
+          <section
+            ref={momRef}
+            id="sec-mom"
+            className="scroll-mt-14 space-y-4 border-t border-slate-200 pt-6 dark:border-slate-800"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
+                Minutes of Meeting
+              </h2>
+
+              <div className="no-print flex flex-wrap items-center gap-1.5">
                 {meeting.mom_link && (
                   <a
                     href={meeting.mom_link}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 hover:underline dark:text-blue-400"
+                    className="inline-flex min-h-[34px] items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-slate-50 dark:border-slate-700 dark:text-blue-400 dark:hover:bg-slate-800"
                   >
                     External MoM
                     <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
+                {meeting.was_successful === true && meeting.mom && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleCopyText(stripMarkdownToPlainText(meeting.mom || ''), 'MoM')
+                      }
+                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      Copy MoM
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => window.print()}
+                      className="inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      <Printer className="h-3.5 w-3.5" />
+                      Print
+                    </button>
+                  </>
+                )}
               </div>
-              <div className="mom-prose text-sm text-slate-800 dark:text-slate-200">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{meeting.mom}</ReactMarkdown>
+            </div>
+
+            {meeting.was_successful === true && meeting.mom ? (
+              <div className="space-y-4">
+                {parsedMom && parsedMom.decisionsItems.length > 0 && (
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 dark:border-emerald-900/50 dark:bg-emerald-950/30">
+                    <h3 className="text-xs font-semibold uppercase tracking-[0.04em] text-emerald-800 dark:text-emerald-300">
+                      {parsedMom.decisionsHeading || 'Decisions'}
+                    </h3>
+                    <ul className="mt-2.5 space-y-2">
+                      {parsedMom.decisionsItems.map((item, idx) => (
+                        <li
+                          key={idx}
+                          className="flex items-start gap-2 text-[15px] leading-relaxed text-slate-900 dark:text-slate-100"
+                        >
+                          <Check className="mt-1 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
+                          <div className="mom-prose">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>{item}</ReactMarkdown>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {parsedMom?.restMarkdown && (
+                  <div className="mom-prose text-slate-800 dark:text-slate-200">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {parsedMom.restMarkdown}
+                    </ReactMarkdown>
+                  </div>
+                )}
               </div>
-            </div>
-          )}
-
-          {meeting.was_successful === false && meeting.fail_reason && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-amber-800 dark:text-amber-300">
-                Why it did not succeed
-              </h2>
-              <p className="mt-1.5 text-sm leading-relaxed text-amber-950 dark:text-amber-100">
-                {meeting.fail_reason}
-              </p>
-            </div>
-          )}
-
-          {meeting.was_successful !== true && meeting.mom_link && (
-            <div>
-              <a
-                href={meeting.mom_link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-slate-200 px-3.5 py-2 text-xs font-medium text-blue-700 hover:bg-slate-50 dark:border-slate-700 dark:text-blue-400 dark:hover:bg-slate-800"
-              >
-                Open MoM Document
-                <ExternalLink className="h-3.5 w-3.5" />
-              </a>
-            </div>
-          )}
+            ) : meeting.was_successful === false && meeting.fail_reason ? (
+              <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
+                <h3 className="text-xs font-semibold uppercase tracking-[0.04em] text-amber-800 dark:text-amber-300">
+                  Why it did not succeed
+                </h3>
+                <p className="mt-1.5 text-[15px] leading-relaxed text-amber-950 dark:text-amber-100">
+                  {meeting.fail_reason}
+                </p>
+              </div>
+            ) : (
+              <EmptyState
+                icon={<FileText className="h-4 w-4" />}
+                title="No minutes recorded yet"
+                description="Minutes of meeting or outcome notes will appear here once recorded."
+              />
+            )}
+          </section>
 
           {/* Attached Resources */}
-          <section className="space-y-2.5">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Resources ({meetingResources.length})
-              </h2>
-            </div>
+          <section
+            ref={resourcesRef}
+            id="sec-resources"
+            className="scroll-mt-14 space-y-3 border-t border-slate-200 pt-6 dark:border-slate-800"
+          >
+            <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
+              Resources ({meetingResources.length})
+            </h2>
 
             {meetingResources.length === 0 ? (
               <EmptyState
@@ -545,7 +943,7 @@ export function MeetingModal({
                         </div>
                       </div>
 
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div className="no-print flex shrink-0 items-center gap-2">
                         <a
                           href={r.url}
                           target="_blank"
@@ -557,7 +955,7 @@ export function MeetingModal({
                         </a>
                         <button
                           type="button"
-                          onClick={() => handleCopy(r.url)}
+                          onClick={() => handleCopyText(r.url, 'Link')}
                           className="inline-flex min-h-[40px] items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                         >
                           <Copy className="h-3.5 w-3.5" />
@@ -572,14 +970,20 @@ export function MeetingModal({
           </section>
 
           {/* Linked Action Items */}
-          <section className="space-y-2.5">
-            <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+          <section
+            ref={actionsRef}
+            id="sec-actions"
+            className="scroll-mt-14 space-y-3 border-t border-slate-200 pt-6 dark:border-slate-800"
+          >
+            <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
               Action Items ({meetingActionItems.length})
             </h2>
             {meetingActionItems.length === 0 ? (
-              <p className="text-xs text-slate-500 dark:text-slate-400">
-                No action items linked to this meeting.
-              </p>
+              <EmptyState
+                icon={<ListTodo className="h-4 w-4" />}
+                title="No action items linked"
+                description="Tasks assigned during or after this meeting will appear here."
+              />
             ) : (
               <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white dark:divide-slate-800 dark:border-slate-800 dark:bg-slate-950/40">
                 {meetingActionItems.map((item) => {
@@ -587,11 +991,11 @@ export function MeetingModal({
                   return (
                     <li
                       key={item.id}
-                      className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+                      className="flex items-center justify-between gap-3 px-4 py-3 text-xs"
                     >
                       <div className="min-w-0">
                         <p
-                          className={`font-medium ${
+                          className={`text-sm font-medium ${
                             item.status === 'done'
                               ? 'text-slate-400 line-through dark:text-slate-500'
                               : 'text-slate-900 dark:text-slate-100'
@@ -599,7 +1003,9 @@ export function MeetingModal({
                         >
                           {item.title}
                         </p>
-                        <p className="text-slate-500 dark:text-slate-400">Owner: {item.owner}</p>
+                        <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
+                          Owner: {item.owner}
+                        </p>
                       </div>
                       <div className="shrink-0">
                         {item.status === 'done' ? (
@@ -708,10 +1114,10 @@ export function MeetingModal({
               </label>
               <textarea
                 id="mm-what"
-                rows={2}
+                rows={3}
                 value={whatHappened}
                 onChange={(e) => setWhatHappened(e.target.value)}
-                placeholder="Summary of discussion or agenda..."
+                placeholder="Summary of discussion or agenda (Markdown supported)..."
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               />
             </div>
@@ -722,10 +1128,10 @@ export function MeetingModal({
               </label>
               <textarea
                 id="mm-next"
-                rows={2}
+                rows={3}
                 value={plannedNext}
                 onChange={(e) => setPlannedNext(e.target.value)}
-                placeholder="Next milestone or follow-up..."
+                placeholder="Next milestone or follow-up (Markdown supported)..."
                 className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               />
             </div>
@@ -799,7 +1205,7 @@ export function MeetingModal({
                   required
                   value={mom}
                   onChange={(e) => setMom(e.target.value)}
-                  placeholder="### Key Decisions&#10;- Approved Phase 1 scope..."
+                  placeholder="### Decisions&#10;- Approved Phase 1 scope&#10;&#10;### Notes&#10;- Benchmark dataset shared."
                   className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
                 />
               ) : (
@@ -848,7 +1254,7 @@ export function MeetingModal({
           {/* Resources Editor */}
           <div className="space-y-2.5 rounded-xl border border-slate-200 bg-slate-50/60 p-3.5 dark:border-slate-800 dark:bg-slate-800/30">
             <div className="flex items-center justify-between">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+              <span className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
                 Attached Resources ({resourceDrafts.length})
               </span>
               <button
