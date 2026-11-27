@@ -1,0 +1,150 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    color-scheme: light;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  :root.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100dvh;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* Native modal dialog scroll containment (modern-web-guidance: dialog) */
+  dialog:modal {
+    overscroll-behavior: contain;
+  }
+
+  dialog::backdrop {
+    background-color: rgb(15 23 42 / 0.45);
+    backdrop-filter: blur(2px);
+    overflow: hidden;
+    overscroll-behavior: contain;
+  }
+
+  /* Respect prefers-reduced-motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Tabular numerals utility for dates, counts, and stats */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Responsive data table container */
+.table-scroll-region {
+  overflow-x: auto;
+  max-width: 100%;
+  container-type: inline-size;
+}
+
+@container (width < 640px) {
+  .responsive-meetings-table thead {
+    display: none;
+  }
+
+  .responsive-meetings-table,
+  .responsive-meetings-table tbody,
+  .responsive-meetings-table tr,
+  .responsive-meetings-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .responsive-meetings-table tr {
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid rgb(226 232 240);
+  }
+
+  .dark .responsive-meetings-table tr {
+    border-bottom-color: rgb(30 41 59);
+  }
+
+  .responsive-meetings-table td {
+    padding: 0.25rem 0;
+    border: 0;
+  }
+
+  .responsive-meetings-table td[data-label]::before {
+    content: attr(data-label) ": ";
+    font-weight: 500;
+    color: rgb(100 116 139);
+    margin-right: 0.375rem;
+  }
+
+  .dark .responsive-meetings-table td[data-label]::before {
+    color: rgb(148 163 184);
+  }
+}
+
+/* Subtle markdown prose styling for MoM rendering */
+.mom-prose h1,
+.mom-prose h2,
+.mom-prose h3 {
+  font-weight: 600;
+  margin-top: 1rem;
+  margin-bottom: 0.375rem;
+  color: inherit;
+}
+
+.mom-prose h3 {
+  font-size: 0.9375rem;
+}
+
+.mom-prose p {
+  margin-top: 0.375rem;
+  margin-bottom: 0.375rem;
+  line-height: 1.6;
+}
+
+.mom-prose ul,
+.mom-prose ol {
+  margin-top: 0.375rem;
+  margin-bottom: 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.mom-prose ul {
+  list-style-type: disc;
+}
+
+.mom-prose ol {
+  list-style-type: decimal;
+}
+
+.mom-prose li {
+  margin-top: 0.25rem;
+  line-height: 1.55;
+}
+
+.mom-prose strong {
+  font-weight: 600;
+}
+
+.mom-prose code {
+  font-size: 0.8125rem;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+  background-color: rgb(241 245 249);
+}
+
+.dark .mom-prose code {
+  background-color: rgb(30 41 59);
+}
