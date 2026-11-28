@@ -36,7 +36,8 @@ import { Dialog } from './ui/Dialog';
 import { Badge } from './ui/Badge';
 import { EmptyState } from './ui/StateViews';
 import { formatDisplayDate, getWeekdayName, isDateOverdue, toIsoDate } from '../lib/dates';
-import { supabase } from '../lib/supabase';
+import { getSourceLabel } from '../lib/urls';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from './ui/Toast';
 
 interface ResourceDraft {
@@ -151,11 +152,19 @@ export function MeetingModal({
   onSaved,
   onDelete,
 }: MeetingModalProps) {
+  const { client } = useAuth();
   const { showToast } = useToast();
   const [modeView, setModeView] = useState<'view' | 'edit'>(initialMode);
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [activeSection, setActiveSection] = useState<SectionKey>('overview');
+
+  // Inline action item form state (view mode, admin only)
+  const [inlineActionOpen, setInlineActionOpen] = useState(false);
+  const [inlineTitle, setInlineTitle] = useState('');
+  const [inlineOwner, setInlineOwner] = useState('');
+  const [inlineDueDate, setInlineDueDate] = useState('');
+  const [inlineSaving, setInlineSaving] = useState(false);
 
   const bodyRef = useRef<HTMLDivElement>(null);
   const overviewRef = useRef<HTMLElement>(null);
@@ -236,6 +245,10 @@ export function MeetingModal({
     if (!open) return;
     setError(null);
     setConfirmDeleteOpen(false);
+    setInlineActionOpen(false);
+    setInlineTitle('');
+    setInlineOwner('');
+    setInlineDueDate('');
     setMomTab('write');
     setActiveSection('overview');
     setModeView(meeting ? (isAdmin ? initialMode : 'view') : 'edit');
@@ -289,31 +302,44 @@ export function MeetingModal({
     }
   }, [open, meeting, initialMode, defaultDate, isAdmin, resources]);
 
-  // Track active section on scroll
+  // Track active section with IntersectionObserver
   useEffect(() => {
     const container = bodyRef.current;
     if (!open || modeView !== 'view' || !container) return;
 
-    const handleScroll = () => {
-      const top = container.getBoundingClientRect().top + 88;
-      const sections: Array<{ key: SectionKey; el: HTMLElement | null }> = [
-        { key: 'actions', el: actionsRef.current },
-        { key: 'resources', el: resourcesRef.current },
-        { key: 'mom', el: momRef.current },
-        { key: 'overview', el: overviewRef.current },
-      ];
-      for (const sec of sections) {
-        if (sec.el && sec.el.getBoundingClientRect().top <= top) {
-          setActiveSection(sec.key);
-          return;
-        }
-      }
-      setActiveSection('overview');
-    };
+    const sectionEntries: Array<{ key: SectionKey; el: HTMLElement | null }> = [
+      { key: 'overview', el: overviewRef.current },
+      { key: 'mom', el: momRef.current },
+      { key: 'resources', el: resourcesRef.current },
+      { key: 'actions', el: actionsRef.current },
+    ];
 
-    container.addEventListener('scroll', handleScroll, { passive: true });
-    return () => container.removeEventListener('scroll', handleScroll);
-  }, [open, modeView]);
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) {
+          const id = visible[0].target.id;
+          if (id === 'sec-overview') setActiveSection('overview');
+          else if (id === 'sec-mom') setActiveSection('mom');
+          else if (id === 'sec-resources') setActiveSection('resources');
+          else if (id === 'sec-actions') setActiveSection('actions');
+        }
+      },
+      {
+        root: container,
+        rootMargin: '-64px 0px -65% 0px',
+        threshold: 0,
+      }
+    );
+
+    for (const sec of sectionEntries) {
+      if (sec.el) observer.observe(sec.el);
+    }
+
+    return () => observer.disconnect();
+  }, [open, modeView, meeting]);
 
   const scrollToSection = (key: SectionKey) => {
     setActiveSection(key);
@@ -367,9 +393,46 @@ export function MeetingModal({
     }
   };
 
+  const handleInlineActionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!meeting) return;
+    if (!inlineTitle.trim()) {
+      showToast('Action item title is required', 'error');
+      return;
+    }
+
+    setInlineSaving(true);
+    try {
+      const { error: dbError } = await client.from('action_items').insert({
+        meeting_id: meeting.id,
+        title: inlineTitle.trim(),
+        owner: inlineOwner.trim(),
+        due_date: inlineDueDate || null,
+        status: 'open',
+      });
+
+      if (dbError) {
+        showToast(dbError.message, 'error');
+      } else {
+        showToast('Action item added', 'success');
+        setInlineTitle('');
+        setInlineOwner('');
+        setInlineDueDate('');
+        setInlineActionOpen(false);
+        onSaved();
+      }
+    } catch {
+      showToast('Failed to add action item', 'error');
+    } finally {
+      setInlineSaving(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+
+    const isCancelledOrRescheduled = status === 'cancelled' || status === 'rescheduled';
 
     if (!title.trim()) {
       setError('Meeting title is required.');
@@ -379,14 +442,26 @@ export function MeetingModal({
       setError('Meeting date is required.');
       return;
     }
-    if (outcome === 'yes' && !mom.trim()) {
-      setError('Minutes of Meeting (MoM) is required when Successful = Yes.');
-      return;
+    if (isCancelledOrRescheduled) {
+      if (!failReason.trim()) {
+        setError(
+          status === 'cancelled'
+            ? 'Reason is required for cancelled meetings.'
+            : 'Reason is required for rescheduled meetings.'
+        );
+        return;
+      }
+    } else if (status === 'done') {
+      if (outcome === 'yes' && !mom.trim()) {
+        setError('Minutes of Meeting (MoM) is required when Successful = Yes.');
+        return;
+      }
+      if (outcome === 'no' && !failReason.trim()) {
+        setError('Reason is required when Successful = No.');
+        return;
+      }
     }
-    if (outcome === 'no' && !failReason.trim()) {
-      setError('Reason is required when Successful = No.');
-      return;
-    }
+
     if (momLink.trim() && !/^https?:\/\//i.test(momLink.trim())) {
       setError('External MoM link must start with http:// or https://');
       return;
@@ -408,6 +483,14 @@ export function MeetingModal({
       .map((s) => s.trim())
       .filter(Boolean);
 
+    const resolvedSuccess = isCancelledOrRescheduled
+      ? null
+      : outcome === 'yes'
+      ? true
+      : outcome === 'no'
+      ? false
+      : null;
+
     const payload = {
       title: title.trim(),
       meeting_date: meetingDate,
@@ -416,9 +499,12 @@ export function MeetingModal({
       attendees,
       what_happened: whatHappened.trim(),
       planned_next: plannedNext.trim(),
-      was_successful: outcome === 'yes' ? true : outcome === 'no' ? false : null,
-      mom: outcome === 'yes' ? mom.trim() : null,
-      fail_reason: outcome === 'no' ? failReason.trim() : null,
+      was_successful: resolvedSuccess,
+      mom: resolvedSuccess === true ? mom.trim() : null,
+      fail_reason:
+        isCancelledOrRescheduled || resolvedSuccess === false
+          ? failReason.trim() || null
+          : null,
       mom_link: momLink.trim() || null,
     };
 
@@ -427,7 +513,7 @@ export function MeetingModal({
       let targetMeetingId = meeting?.id;
 
       if (meeting) {
-        const { error: dbError } = await supabase
+        const { error: dbError } = await client
           .from('meetings')
           .update(payload)
           .eq('id', meeting.id);
@@ -436,7 +522,7 @@ export function MeetingModal({
           return;
         }
       } else {
-        const { data: inserted, error: dbError } = await supabase
+        const { data: inserted, error: dbError } = await client
           .from('meetings')
           .insert(payload)
           .select('id')
@@ -450,7 +536,7 @@ export function MeetingModal({
 
       if (targetMeetingId) {
         if (removedResourceIds.length > 0) {
-          const { error: delErr } = await supabase
+          const { error: delErr } = await client
             .from('resources')
             .delete()
             .in('id', removedResourceIds);
@@ -462,7 +548,7 @@ export function MeetingModal({
 
         const existingRows = resourceDrafts.filter((r) => r.id);
         for (const r of existingRows) {
-          const { error: updErr } = await supabase
+          const { error: updErr } = await client
             .from('resources')
             .update({
               title: r.title.trim(),
@@ -480,7 +566,7 @@ export function MeetingModal({
 
         const newRows = resourceDrafts.filter((r) => !r.id);
         if (newRows.length > 0) {
-          const { error: insErr } = await supabase.from('resources').insert(
+          const { error: insErr } = await client.from('resources').insert(
             newRows.map((r) => ({
               title: r.title.trim(),
               url: r.url.trim(),
@@ -554,17 +640,6 @@ export function MeetingModal({
         >
           <Link2 className="h-4 w-4" />
         </button>
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => setModeView('edit')}
-            aria-label="Edit meeting"
-            className="hidden min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 sm:inline-flex dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-          >
-            <Pencil className="h-3.5 w-3.5" />
-            Edit
-          </button>
-        )}
       </>
     ) : undefined;
 
@@ -631,7 +706,7 @@ export function MeetingModal({
       open={open}
       onClose={onClose}
       fullScreenOnMobile
-      maxWidthClass="max-w-3xl"
+      maxWidthClass="max-w-[760px]"
       titleSizeClass="text-xl sm:text-2xl font-semibold leading-snug"
       title={modalTitle}
       subtitle={modalSubtitle}
@@ -642,13 +717,13 @@ export function MeetingModal({
         modeView === 'view' && meeting ? (
           <div className="flex flex-wrap items-center gap-1.5">
             <Badge variant={meeting.status}>{meeting.status}</Badge>
-            {meeting.was_successful === true && (
+            {meeting.status === 'done' && meeting.was_successful === true && (
               <Badge variant="done">
                 <CheckCircle2 className="h-3 w-3" />
                 Successful
               </Badge>
             )}
-            {meeting.was_successful === false && (
+            {meeting.status === 'done' && meeting.was_successful === false && (
               <Badge variant="overdue">
                 <AlertCircle className="h-3 w-3" />
                 Not successful
@@ -695,7 +770,11 @@ export function MeetingModal({
             <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-3.5 py-2.5 dark:border-slate-800 dark:bg-slate-800/40">
               <p className="text-[11px] font-medium text-slate-500 dark:text-slate-400">Outcome</p>
               <p className="mt-0.5 flex items-center gap-1 text-sm font-semibold text-slate-900 dark:text-slate-100">
-                {meeting.was_successful === true ? (
+                {meeting.status === 'cancelled' ? (
+                  <span className="text-slate-600 dark:text-slate-300">Not held</span>
+                ) : meeting.status === 'rescheduled' ? (
+                  <span className="text-amber-700 dark:text-amber-400">Rescheduled</span>
+                ) : meeting.was_successful === true ? (
                   <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     Success
@@ -715,7 +794,7 @@ export function MeetingModal({
           {/* Sticky Section Nav */}
           <nav
             aria-label="Meeting sections"
-            className="no-print sticky -top-6 z-10 -mx-6 flex items-center gap-1.5 overflow-x-auto border-b border-slate-100 bg-white/95 px-6 py-2.5 backdrop-blur-xs sm:-mx-8 sm:px-8 dark:border-slate-800 dark:bg-slate-900/95"
+            className="no-print sticky -top-6 z-10 -mx-6 flex items-center gap-1.5 overflow-x-auto border-b border-slate-100 bg-white/95 px-6 py-2.5 backdrop-blur-xs sm:-top-8 sm:-mx-8 sm:px-8 dark:border-slate-800 dark:bg-slate-900/95"
           >
             {(
               [
@@ -744,7 +823,7 @@ export function MeetingModal({
           </nav>
 
           {/* Overview: Attendees, What happened, Next steps */}
-          <section ref={overviewRef} id="sec-overview" className="scroll-mt-14 space-y-6">
+          <section ref={overviewRef} id="sec-overview" className="scroll-mt-[72px] space-y-6">
             <div>
               <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
                 Attendees
@@ -809,7 +888,7 @@ export function MeetingModal({
           <section
             ref={momRef}
             id="sec-mom"
-            className="scroll-mt-14 space-y-4 border-t border-slate-200 pt-6 dark:border-slate-800"
+            className="scroll-mt-[72px] space-y-4 border-t border-slate-200 pt-6 dark:border-slate-800"
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
@@ -864,10 +943,10 @@ export function MeetingModal({
                       {parsedMom.decisionsItems.map((item, idx) => (
                         <li
                           key={idx}
-                          className="flex items-start gap-2 text-[15px] leading-relaxed text-slate-900 dark:text-slate-100"
+                          className="flex items-start gap-2 text-[15px] leading-[1.65] text-slate-900 dark:text-slate-100"
                         >
-                          <Check className="mt-1 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
-                          <div className="mom-prose">
+                          <Check className="mt-[4px] h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
+                          <div className="mom-prose flex-1 [&_p]:m-0">
                             <ReactMarkdown remarkPlugins={[remarkGfm]}>{item}</ReactMarkdown>
                           </div>
                         </li>
@@ -884,12 +963,19 @@ export function MeetingModal({
                   </div>
                 )}
               </div>
-            ) : meeting.was_successful === false && meeting.fail_reason ? (
+            ) : (meeting.was_successful === false ||
+                meeting.status === 'cancelled' ||
+                meeting.status === 'rescheduled') &&
+              meeting.fail_reason ? (
               <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-4 dark:border-amber-900/60 dark:bg-amber-950/30">
                 <h3 className="text-xs font-semibold uppercase tracking-[0.04em] text-amber-800 dark:text-amber-300">
-                  Why it did not succeed
+                  {meeting.status === 'cancelled'
+                    ? 'Cancellation reason'
+                    : meeting.status === 'rescheduled'
+                    ? 'Reschedule reason'
+                    : 'Why it did not succeed'}
                 </h3>
-                <p className="mt-1.5 text-[15px] leading-relaxed text-amber-950 dark:text-amber-100">
+                <p className="mt-1.5 text-[15px] leading-[1.65] text-amber-950 dark:text-amber-100">
                   {meeting.fail_reason}
                 </p>
               </div>
@@ -906,7 +992,7 @@ export function MeetingModal({
           <section
             ref={resourcesRef}
             id="sec-resources"
-            className="scroll-mt-14 space-y-3 border-t border-slate-200 pt-6 dark:border-slate-800"
+            className="scroll-mt-[72px] space-y-3 border-t border-slate-200 pt-6 dark:border-slate-800"
           >
             <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
               Resources ({meetingResources.length})
@@ -934,6 +1020,9 @@ export function MeetingModal({
                         <div className="min-w-0">
                           <p className="text-sm font-medium text-slate-900 dark:text-slate-100">
                             {r.title}
+                          </p>
+                          <p className="mt-0.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                            {getSourceLabel(r.url)}
                           </p>
                           {r.note && (
                             <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
@@ -973,11 +1062,89 @@ export function MeetingModal({
           <section
             ref={actionsRef}
             id="sec-actions"
-            className="scroll-mt-14 space-y-3 border-t border-slate-200 pt-6 dark:border-slate-800"
+            className="scroll-mt-[72px] space-y-3 border-t border-slate-200 pt-6 dark:border-slate-800"
           >
-            <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
-              Action Items ({meetingActionItems.length})
-            </h2>
+            <div className="flex items-center justify-between gap-2">
+              <h2 className="text-xs font-semibold uppercase tracking-[0.04em] text-slate-600 dark:text-slate-300">
+                Action Items ({meetingActionItems.length})
+              </h2>
+              {isAdmin && !inlineActionOpen && (
+                <button
+                  type="button"
+                  onClick={() => setInlineActionOpen(true)}
+                  className="no-print inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Add action item
+                </button>
+              )}
+            </div>
+
+            {isAdmin && inlineActionOpen && (
+              <form
+                onSubmit={handleInlineActionSubmit}
+                className="no-print space-y-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3.5 dark:border-slate-800 dark:bg-slate-800/40"
+              >
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-12">
+                  <div className="sm:col-span-5">
+                    <label htmlFor="inline-ai-title" className="sr-only">
+                      Action item title
+                    </label>
+                    <input
+                      id="inline-ai-title"
+                      type="text"
+                      required
+                      autoFocus
+                      value={inlineTitle}
+                      onChange={(e) => setInlineTitle(e.target.value)}
+                      placeholder="Task title *"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-700 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    />
+                  </div>
+                  <div className="sm:col-span-4">
+                    <label htmlFor="inline-ai-owner" className="sr-only">
+                      Owner
+                    </label>
+                    <input
+                      id="inline-ai-owner"
+                      type="text"
+                      value={inlineOwner}
+                      onChange={(e) => setInlineOwner(e.target.value)}
+                      placeholder="Owner (optional)"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs text-slate-900 focus:border-blue-700 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    />
+                  </div>
+                  <div className="sm:col-span-3">
+                    <label htmlFor="inline-ai-due" className="sr-only">
+                      Due date
+                    </label>
+                    <input
+                      id="inline-ai-due"
+                      type="date"
+                      value={inlineDueDate}
+                      onChange={(e) => setInlineDueDate(e.target.value)}
+                      className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setInlineActionOpen(false)}
+                    className="min-h-[34px] rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={inlineSaving}
+                    className="min-h-[34px] rounded-lg bg-blue-700 px-3 py-1 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-60 dark:bg-blue-600"
+                  >
+                    {inlineSaving ? 'Saving...' : 'Save item'}
+                  </button>
+                </div>
+              </form>
+            )}
             {meetingActionItems.length === 0 ? (
               <EmptyState
                 icon={<ListTodo className="h-4 w-4" />}
@@ -1137,93 +1304,10 @@ export function MeetingModal({
             </div>
           </div>
 
-          <div>
-            <span className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-              Successful?
-            </span>
-            <div className="mt-1.5 grid grid-cols-3 gap-2">
-              {(
-                [
-                  { value: 'unset', label: 'Pending' },
-                  { value: 'yes', label: 'Yes' },
-                  { value: 'no', label: 'No' },
-                ] as const
-              ).map((opt) => (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => setOutcome(opt.value)}
-                  className={`min-h-[40px] rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 ${
-                    outcome === opt.value
-                      ? 'border-blue-700 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950/60 dark:text-blue-200'
-                      : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {outcome === 'yes' && (
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <label htmlFor="mm-mom" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-                  Minutes of Meeting (Markdown) *
-                </label>
-                <div className="inline-flex rounded-lg border border-slate-200 p-0.5 dark:border-slate-700">
-                  <button
-                    type="button"
-                    onClick={() => setMomTab('write')}
-                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium ${
-                      momTab === 'write'
-                        ? 'bg-blue-700 text-white dark:bg-blue-600'
-                        : 'text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    Write
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMomTab('preview')}
-                    className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium ${
-                      momTab === 'preview'
-                        ? 'bg-blue-700 text-white dark:bg-blue-600'
-                        : 'text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    <Eye className="h-3 w-3" />
-                    Preview
-                  </button>
-                </div>
-              </div>
-
-              {momTab === 'write' ? (
-                <textarea
-                  id="mm-mom"
-                  rows={6}
-                  required
-                  value={mom}
-                  onChange={(e) => setMom(e.target.value)}
-                  placeholder="### Decisions&#10;- Approved Phase 1 scope&#10;&#10;### Notes&#10;- Benchmark dataset shared."
-                  className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-                />
-              ) : (
-                <div className="mom-prose min-h-[140px] rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
-                  {mom.trim() ? (
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{mom}</ReactMarkdown>
-                  ) : (
-                    <p className="text-xs text-slate-400">Nothing to preview yet.</p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {outcome === 'no' && (
+          {status === 'cancelled' || status === 'rescheduled' ? (
             <div>
               <label htmlFor="mm-fail" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-                Reason it did not succeed *
+                {status === 'cancelled' ? 'Reason for cancellation *' : 'Reason for rescheduling *'}
               </label>
               <textarea
                 id="mm-fail"
@@ -1231,10 +1315,116 @@ export function MeetingModal({
                 required
                 value={failReason}
                 onChange={(e) => setFailReason(e.target.value)}
-                placeholder="Explain what blocked or prevented completion..."
+                placeholder={
+                  status === 'cancelled'
+                    ? 'Explain why this meeting was cancelled...'
+                    : 'Explain why this meeting was rescheduled...'
+                }
                 className="mt-1 w-full rounded-lg border border-amber-300 bg-amber-50/40 px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-amber-800 dark:bg-amber-950/20 dark:text-slate-100"
               />
             </div>
+          ) : (
+            <>
+              <div>
+                <span className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                  Successful?
+                </span>
+                <div className="mt-1.5 grid grid-cols-3 gap-2">
+                  {(
+                    [
+                      { value: 'unset', label: 'Pending' },
+                      { value: 'yes', label: 'Yes' },
+                      { value: 'no', label: 'No' },
+                    ] as const
+                  ).map((opt) => (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => setOutcome(opt.value)}
+                      className={`min-h-[40px] rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 ${
+                        outcome === opt.value
+                          ? 'border-blue-700 bg-blue-50 text-blue-800 dark:border-blue-500 dark:bg-blue-950/60 dark:text-blue-200'
+                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {outcome === 'yes' && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label htmlFor="mm-mom" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                      Minutes of Meeting (Markdown) *
+                    </label>
+                    <div className="inline-flex rounded-lg border border-slate-200 p-0.5 dark:border-slate-700">
+                      <button
+                        type="button"
+                        onClick={() => setMomTab('write')}
+                        className={`rounded-md px-2.5 py-1 text-[11px] font-medium ${
+                          momTab === 'write'
+                            ? 'bg-blue-700 text-white dark:bg-blue-600'
+                            : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        Write
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMomTab('preview')}
+                        className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium ${
+                          momTab === 'preview'
+                            ? 'bg-blue-700 text-white dark:bg-blue-600'
+                            : 'text-slate-600 dark:text-slate-300'
+                        }`}
+                      >
+                        <Eye className="h-3 w-3" />
+                        Preview
+                      </button>
+                    </div>
+                  </div>
+
+                  {momTab === 'write' ? (
+                    <textarea
+                      id="mm-mom"
+                      rows={6}
+                      required
+                      value={mom}
+                      onChange={(e) => setMom(e.target.value)}
+                      placeholder="### Decisions&#10;- Approved Phase 1 scope&#10;&#10;### Notes&#10;- Benchmark dataset shared."
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    />
+                  ) : (
+                    <div className="mom-prose min-h-[140px] rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-sm text-slate-800 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200">
+                      {mom.trim() ? (
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>{mom}</ReactMarkdown>
+                      ) : (
+                        <p className="text-xs text-slate-400">Nothing to preview yet.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {outcome === 'no' && (
+                <div>
+                  <label htmlFor="mm-fail" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Reason it did not succeed *
+                  </label>
+                  <textarea
+                    id="mm-fail"
+                    rows={3}
+                    required
+                    value={failReason}
+                    onChange={(e) => setFailReason(e.target.value)}
+                    placeholder="Explain what blocked or prevented completion..."
+                    className="mt-1 w-full rounded-lg border border-amber-300 bg-amber-50/40 px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-amber-800 dark:bg-amber-950/20 dark:text-slate-100"
+                  />
+                </div>
+              )}
+            </>
           )}
 
           <div>

@@ -1,57 +1,78 @@
 import React, { useEffect, useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Dialog } from './ui/Dialog';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from './ui/Toast';
-import type { Meeting } from '../types/database';
+import type { ActionItem, Meeting } from '../types/database';
 
 interface ActionItemModalProps {
   open: boolean;
   onClose: () => void;
   meetings: Meeting[];
   onSaved: () => void;
+  /** Pass an existing item to open in edit mode */
+  editingItem?: ActionItem | null;
 }
 
-export function ActionItemModal({ open, onClose, meetings, onSaved }: ActionItemModalProps) {
+export function ActionItemModal({
+  open,
+  onClose,
+  meetings,
+  onSaved,
+  editingItem,
+}: ActionItemModalProps) {
+  const { client } = useAuth();
   const { showToast } = useToast();
   const [title, setTitle] = useState('');
-  const [owner, setOwner] = useState('');
   const [dueDate, setDueDate] = useState('');
   const [meetingId, setMeetingId] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isEditing = Boolean(editingItem);
+
   useEffect(() => {
     if (!open) return;
-    setTitle('');
-    setOwner('');
-    setDueDate('');
-    setMeetingId('');
+    setTitle(editingItem?.title ?? '');
+    setDueDate(editingItem?.due_date ?? '');
+    setMeetingId(editingItem?.meeting_id ?? '');
     setError(null);
-  }, [open]);
+  }, [open, editingItem]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
-    if (!title.trim() || !owner.trim()) {
-      setError('Title and owner are required.');
+    if (!title.trim()) {
+      setError('Task title is required.');
       return;
     }
 
     setSaving(true);
     try {
-      const { error: dbError } = await supabase.from('action_items').insert({
-        title: title.trim(),
-        owner: owner.trim(),
-        due_date: dueDate || null,
-        meeting_id: meetingId || null,
-        status: 'open',
-      });
+      let dbError;
+      if (isEditing && editingItem) {
+        ({ error: dbError } = await client
+          .from('action_items')
+          .update({
+            title: title.trim(),
+            due_date: dueDate || null,
+            meeting_id: meetingId || null,
+          })
+          .eq('id', editingItem.id));
+      } else {
+        ({ error: dbError } = await client.from('action_items').insert({
+          title: title.trim(),
+          owner: '',
+          due_date: dueDate || null,
+          meeting_id: meetingId || null,
+          status: 'open',
+        }));
+      }
 
       if (dbError) {
         setError(dbError.message);
       } else {
-        showToast('Action item added', 'success');
+        showToast(isEditing ? 'Task updated' : 'Action item added', 'success');
         onSaved();
         onClose();
       }
@@ -66,11 +87,12 @@ export function ActionItemModal({ open, onClose, meetings, onSaved }: ActionItem
     <Dialog
       open={open}
       onClose={onClose}
-      title="Add Action Item"
-      subtitle="Assign a deliverable with an optional due date"
+      title={isEditing ? 'Edit Task' : 'Add Action Item'}
+      subtitle="Add a task with an optional due date"
       maxWidthClass="max-w-md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Task */}
         <div>
           <label htmlFor="ai-title" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
             Task *
@@ -87,36 +109,21 @@ export function ActionItemModal({ open, onClose, meetings, onSaved }: ActionItem
           />
         </div>
 
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div>
-            <label htmlFor="ai-owner" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-              Owner *
-            </label>
-            <input
-              id="ai-owner"
-              type="text"
-              required
-              value={owner}
-              onChange={(e) => setOwner(e.target.value)}
-              placeholder="e.g. Priya Iyer"
-              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="ai-due" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
-              Due Date
-            </label>
-            <input
-              id="ai-due"
-              type="date"
-              value={dueDate}
-              onChange={(e) => setDueDate(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
-            />
-          </div>
+        {/* Due Date — full width now that Owner is gone */}
+        <div>
+          <label htmlFor="ai-due" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
+            Due Date
+          </label>
+          <input
+            id="ai-due"
+            type="date"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm tabular-nums text-slate-900 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+          />
         </div>
 
+        {/* Related Meeting */}
         <div>
           <label htmlFor="ai-meeting" className="block text-xs font-medium text-slate-700 dark:text-slate-300">
             Related Meeting (optional)
@@ -159,7 +166,7 @@ export function ActionItemModal({ open, onClose, meetings, onSaved }: ActionItem
             disabled={saving}
             className="min-h-[44px] rounded-lg bg-blue-700 px-4 py-2 text-xs font-medium text-white hover:bg-blue-800 disabled:opacity-60 dark:bg-blue-600 dark:hover:bg-blue-500"
           >
-            {saving ? 'Saving...' : 'Add Item'}
+            {saving ? 'Saving...' : isEditing ? 'Save Changes' : 'Add Item'}
           </button>
         </div>
       </form>

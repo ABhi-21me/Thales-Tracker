@@ -26,7 +26,7 @@ export function clearRememberDevice(): void {
   }
 }
 
-function getPreferredStorage(): Storage {
+function getViewerStorage(): Storage {
   try {
     return window.localStorage.getItem(REMEMBER_DEVICE_KEY) === 'false'
       ? window.sessionStorage
@@ -36,17 +36,17 @@ function getPreferredStorage(): Storage {
   }
 }
 
-const authStorage = {
+const viewerStorageAdapter = {
   getItem: (key: string): string | null => {
     try {
-      return getPreferredStorage().getItem(key);
+      return getViewerStorage().getItem(key);
     } catch {
       return null;
     }
   },
   setItem: (key: string, value: string): void => {
     try {
-      getPreferredStorage().setItem(key, value);
+      getViewerStorage().setItem(key, value);
     } catch {
       // Ignore storage errors
     }
@@ -61,14 +61,25 @@ const authStorage = {
   },
 };
 
-export const supabase = createClient(
-  supabaseUrl || 'https://placeholder.supabase.co',
-  supabaseAnonKey || 'placeholder-anon-key',
-  {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      storage: authStorage,
-    },
-  }
-);
+const resolvedUrl = supabaseUrl || 'https://placeholder.supabase.co';
+const resolvedKey = supabaseAnonKey || 'placeholder-anon-key';
+
+export const viewerClient = createClient(resolvedUrl, resolvedKey, {
+  auth: {
+    storageKey: 'tt-viewer',
+    storage: viewerStorageAdapter,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+  },
+});
+
+export const adminClient = createClient(resolvedUrl, resolvedKey, {
+  auth: {
+    storageKey: 'tt-admin',
+    storage: window.sessionStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: false,
+  },
+});

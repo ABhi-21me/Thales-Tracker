@@ -86,7 +86,7 @@ export function Dialog({
   }
 
   const sizeClasses = fullScreenOnMobile
-    ? `m-0 h-dvh max-h-dvh w-full max-w-none rounded-none border-0 sm:m-auto sm:h-auto sm:max-h-[90vh] sm:w-[calc(100%-2rem)] ${maxWidthClass} sm:rounded-2xl sm:border`
+    ? `m-0 h-dvh max-h-dvh w-full max-w-none rounded-none border-0 sm:m-auto sm:h-auto sm:max-h-[90vh] sm:w-full ${maxWidthClass} sm:rounded-2xl sm:border`
     : `m-auto w-[calc(100%-2rem)] ${maxWidthClass} max-h-[90vh] rounded-2xl border`;
 
   return (
@@ -126,7 +126,7 @@ export function Dialog({
           {headerExtra && <div className="mt-2.5">{headerExtra}</div>}
         </header>
 
-        <div ref={bodyRef} className="flex-1 overflow-y-auto px-6 py-6 sm:px-8">
+        <div ref={bodyRef} className="flex-1 overflow-y-auto px-6 py-6 sm:p-8">
           {children}
         </div>
 

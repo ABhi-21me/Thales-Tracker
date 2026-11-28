@@ -12,6 +12,7 @@ import type { Meeting, MeetingStatus, Resource } from '../types/database';
 import { Badge } from '../components/ui/Badge';
 import { EmptyState } from '../components/ui/StateViews';
 import { formatDisplayDate, getWeekdayName } from '../lib/dates';
+import { stripMarkdownSyntax } from '../lib/urls';
 
 interface MeetingsPageProps {
   meetings: Meeting[];
@@ -194,12 +195,16 @@ export function MeetingsPage({
                       <p className="line-clamp-2">{m.planned_next || '—'}</p>
                     </td>
                     <td data-label="Successful?" className="whitespace-nowrap px-4 py-3.5">
-                      {m.was_successful === true ? (
+                      {m.status === 'cancelled' ? (
+                        <Badge variant="cancelled">Not held</Badge>
+                      ) : m.status === 'rescheduled' ? (
+                        <Badge variant="overdue">Rescheduled</Badge>
+                      ) : m.status === 'done' && m.was_successful === true ? (
                         <Badge variant="done">
                           <CheckCircle2 className="h-3 w-3" />
                           Yes
                         </Badge>
-                      ) : m.was_successful === false ? (
+                      ) : m.status === 'done' && m.was_successful === false ? (
                         <Badge variant="overdue">
                           <AlertCircle className="h-3 w-3" />
                           No
@@ -215,10 +220,12 @@ export function MeetingsPage({
                       data-label="MoM / Reason"
                       className="max-w-xs px-4 py-3.5 text-slate-600 dark:text-slate-300"
                     >
-                      {m.was_successful === false ? (
+                      {m.status === 'cancelled' ||
+                      m.status === 'rescheduled' ||
+                      (m.status === 'done' && m.was_successful === false) ? (
                         <div className="space-y-1.5">
-                          <span className="line-clamp-2 text-amber-800 dark:text-amber-300">
-                            {m.fail_reason || '—'}
+                          <span className="line-clamp-2 text-slate-700 dark:text-slate-300">
+                            {m.fail_reason ? stripMarkdownSyntax(m.fail_reason) : '—'}
                           </span>
                           {resCount > 0 && (
                             <div>

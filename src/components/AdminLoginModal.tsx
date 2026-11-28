@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { AlertCircle } from 'lucide-react';
 import { Dialog } from './ui/Dialog';
-import { setRememberDevice, supabase } from '../lib/supabase';
+import { adminClient } from '../lib/supabase';
 import { useToast } from './ui/Toast';
 
 interface AdminLoginModalProps {
@@ -14,7 +14,6 @@ export function AdminLoginModal({ open, onClose, onSuccess }: AdminLoginModalPro
   const { showToast } = useToast();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [rememberDevice, setRememberDeviceState] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -28,9 +27,8 @@ export function AdminLoginModal({ open, onClose, onSuccess }: AdminLoginModalPro
     }
 
     setLoading(true);
-    setRememberDevice(rememberDevice);
     try {
-      const { data, error: authError } = await supabase.auth.signInWithPassword({
+      const { data, error: authError } = await adminClient.auth.signInWithPassword({
         email: email.trim(),
         password,
       });
@@ -38,7 +36,7 @@ export function AdminLoginModal({ open, onClose, onSuccess }: AdminLoginModalPro
       if (authError) {
         setError(authError.message);
       } else if (data.user?.app_metadata?.role !== 'admin') {
-        await supabase.auth.signOut();
+        await adminClient.auth.signOut({ scope: 'local' });
         setError('This account does not have admin permissions.');
       } else {
         setPassword('');
@@ -58,7 +56,7 @@ export function AdminLoginModal({ open, onClose, onSuccess }: AdminLoginModalPro
       open={open}
       onClose={onClose}
       title="Admin Sign In"
-      subtitle="Authenticated with Supabase Auth (no self-signup)"
+      subtitle="Session stays active for this tab only"
       maxWidthClass="max-w-md"
     >
       <form onSubmit={handleSubmit} className="space-y-4">
@@ -100,20 +98,6 @@ export function AdminLoginModal({ open, onClose, onSuccess }: AdminLoginModalPro
             className="mt-1.5 w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-700/20 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
           />
         </div>
-
-        <label
-          htmlFor="admin-remember"
-          className="flex min-h-[44px] cursor-pointer items-center gap-2.5 text-xs text-slate-600 select-none sm:min-h-[32px] dark:text-slate-300"
-        >
-          <input
-            id="admin-remember"
-            type="checkbox"
-            checked={rememberDevice}
-            onChange={(e) => setRememberDeviceState(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300 accent-blue-700 focus-visible:ring-2 focus-visible:ring-blue-700 dark:border-slate-600"
-          />
-          <span>Remember this device</span>
-        </label>
 
         {error && (
           <div

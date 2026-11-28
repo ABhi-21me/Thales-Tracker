@@ -9,7 +9,9 @@ import {
   Clock,
   ExternalLink,
   ListTodo,
+  Pencil,
   Plus,
+  Trash2,
 } from 'lucide-react';
 import type { ActionItem, Meeting } from '../types/database';
 import { Calendar } from '../components/ui/Calendar';
@@ -22,7 +24,7 @@ import {
   isDateOverdue,
   toIsoDate,
 } from '../lib/dates';
-import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../components/ui/Toast';
 
 interface HomePageProps {
@@ -33,6 +35,7 @@ interface HomePageProps {
   onAddMeetingForDate: (isoDate: string) => void;
   onOpenAddActionItem: () => void;
   onRefresh: () => void;
+  onEditActionItem?: (item: ActionItem) => void;
 }
 
 const DEFAULT_SCHEDULE_URL = 'https://meet.google.com/home';
@@ -45,7 +48,9 @@ export function HomePage({
   onAddMeetingForDate,
   onOpenAddActionItem,
   onRefresh,
+  onEditActionItem,
 }: HomePageProps) {
+  const { client } = useAuth();
   const { showToast } = useToast();
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [localItems, setLocalItems] = useState<ActionItem[]>(actionItems);
@@ -138,7 +143,7 @@ export function HomePage({
         prev.map((it) => (it.id === item.id ? { ...it, status: 'done' } : it))
       );
 
-      const { error } = await supabase
+      const { error } = await client
         .from('action_items')
         .update({ status: 'done' })
         .eq('id', item.id);
@@ -169,7 +174,7 @@ export function HomePage({
       setLocalItems((prev) =>
         prev.map((it) => (it.id === item.id ? { ...it, status: 'open' } : it))
       );
-      const { error } = await supabase
+      const { error } = await client
         .from('action_items')
         .update({ status: targetStatus })
         .eq('id', item.id);
@@ -183,6 +188,19 @@ export function HomePage({
         showToast('Task reopened', 'info');
         onRefresh();
       }
+    }
+  };
+
+  const handleDeleteActionItem = async (item: ActionItem) => {
+    // Optimistic delete
+    setLocalItems((prev) => prev.filter((it) => it.id !== item.id));
+    const { error } = await client.from('action_items').delete().eq('id', item.id);
+    if (error) {
+      setLocalItems((prev) => [...prev, item]);
+      showToast(error.message || 'Failed to delete task', 'error');
+    } else {
+      showToast('Task deleted', 'info');
+      onRefresh();
     }
   };
 
@@ -369,13 +387,10 @@ export function HomePage({
                           >
                             {item.title}
                           </p>
-                          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
-                            Owner: {item.owner}
-                          </p>
                         </div>
                       </div>
 
-                      <div className="shrink-0 text-right">
+                      <div className="flex shrink-0 items-center gap-1 text-right">
                         {item.due_date ? (
                           <Badge variant={overdue ? 'overdue' : 'neutral'}>
                             <Clock className="h-3 w-3" />
@@ -386,6 +401,26 @@ export function HomePage({
                           </Badge>
                         ) : (
                           <span className="text-xs text-slate-400">No due date</span>
+                        )}
+                        {isAdmin && !isCompleting && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => onEditActionItem?.(item)}
+                              aria-label={`Edit "${item.title}"`}
+                              className="ml-1 flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-700 dark:hover:bg-slate-800 dark:hover:text-blue-400"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteActionItem(item)}
+                              aria-label={`Delete "${item.title}"`}
+                              className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
                         )}
                       </div>
                     </li>
@@ -438,16 +473,25 @@ export function HomePage({
                             <p className="text-sm text-slate-500 line-through dark:text-slate-400">
                               {item.title}
                             </p>
-                            <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                              Owner: {item.owner}
-                            </p>
                           </div>
                         </div>
-                        {item.due_date && (
-                          <span className="shrink-0 tabular-nums text-[11px] text-slate-400">
-                            {formatDisplayDate(item.due_date)}
-                          </span>
-                        )}
+                        <div className="flex shrink-0 items-center gap-1">
+                          {item.due_date && (
+                            <span className="shrink-0 tabular-nums text-[11px] text-slate-400">
+                              {formatDisplayDate(item.due_date)}
+                            </span>
+                          )}
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteActionItem(item)}
+                              aria-label={`Delete "${item.title}"`}
+                              className="flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 dark:hover:bg-red-950/40 dark:hover:text-red-400"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </li>
                     ))}
                   </ul>

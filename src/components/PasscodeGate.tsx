@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Lock, ShieldCheck, AlertCircle } from 'lucide-react';
-import { isSupabaseConfigured, setRememberDevice, supabase, viewerEmail } from '../lib/supabase';
+import { isSupabaseConfigured, setRememberDevice, viewerClient, viewerEmail } from '../lib/supabase';
 
 interface PasscodeGateProps {
   onOpenAdminLogin: () => void;
@@ -26,7 +26,7 @@ export function PasscodeGate({ onOpenAdminLogin }: PasscodeGateProps) {
     setRememberDevice(rememberDevice);
 
     try {
-      const { error: authError } = await supabase.auth.signInWithPassword({
+      const { error: authError } = await viewerClient.auth.signInWithPassword({
         email: viewerEmail,
         password: passcode,
       });

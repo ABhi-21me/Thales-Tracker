@@ -110,7 +110,7 @@
 .mom-prose {
   font-size: 0.9375rem;
   line-height: 1.65;
-  max-width: 70ch;
+  max-width: none;
 }
 
 .mom-prose h1,
@@ -199,5 +199,164 @@
 
   dialog[open] .overflow-y-auto {
     overflow: visible !important;
+  }
+}
+
+/* 3-Level Org Chart Connectors (CSS pseudo-elements, 1.5px, slate-300 / slate-600) */
+:root {
+  --org-line: #cbd5e1;
+  --org-dot: #94a3b8;
+}
+
+:root.dark {
+  --org-line: #475569;
+  --org-dot: #64748b;
+}
+
+@media (min-width: 1024px) {
+  .org-v-link {
+    position: relative;
+    height: 32px;
+    width: 100%;
+  }
+
+  .org-v-link::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1.5px;
+    transform: translateX(-50%);
+    background-color: var(--org-line);
+  }
+
+  .org-v-link::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    transform: translateX(-50%);
+    background-color: var(--org-dot);
+  }
+
+  .org-bus-trunk {
+    position: relative;
+    height: 24px;
+    width: 100%;
+  }
+
+  .org-bus-trunk::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1.5px;
+    transform: translateX(-50%);
+    background-color: var(--org-line);
+  }
+
+  .org-bus-trunk::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    bottom: -3px;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    transform: translateX(-50%);
+    background-color: var(--org-dot);
+    z-index: 1;
+  }
+
+  .org-student-node {
+    position: relative;
+  }
+
+  .org-student-node::before {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: -24px;
+    height: 24px;
+    width: 1.5px;
+    transform: translateX(-50%);
+    background-color: var(--org-line);
+  }
+
+  .org-student-node::after {
+    content: '';
+    position: absolute;
+    top: -24px;
+    height: 1.5px;
+    background-color: var(--org-line);
+  }
+
+  .org-student-node:first-child::after {
+    left: 50%;
+    right: -10px;
+    border-top-left-radius: 4px;
+  }
+
+  .org-student-node:not(:first-child):not(:last-child)::after {
+    left: -10px;
+    right: -10px;
+  }
+
+  .org-student-node:last-child::after {
+    left: -10px;
+    right: 50%;
+    border-top-right-radius: 4px;
+  }
+
+  .org-student-node:only-child::after {
+    display: none;
+  }
+}
+
+@media (max-width: 1023px) {
+  .org-mobile-spine {
+    position: relative;
+    padding-left: 24px;
+  }
+
+  .org-mobile-spine::before {
+    content: '';
+    position: absolute;
+    left: 8px;
+    top: 24px;
+    bottom: 24px;
+    width: 1.5px;
+    background-color: var(--org-line);
+    border-radius: 9999px;
+  }
+
+  .org-mobile-branch {
+    position: relative;
+  }
+
+  .org-mobile-branch::before {
+    content: '';
+    position: absolute;
+    left: -16px;
+    top: 28px;
+    width: 16px;
+    height: 1.5px;
+    background-color: var(--org-line);
+  }
+
+  .org-mobile-branch::after {
+    content: '';
+    position: absolute;
+    left: -18.25px;
+    top: 25.5px;
+    width: 6px;
+    height: 6px;
+    border-radius: 9999px;
+    background-color: var(--org-dot);
   }
 }

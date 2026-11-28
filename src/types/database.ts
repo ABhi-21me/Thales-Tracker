@@ -37,7 +37,7 @@ export interface Contact {
   phone: string | null;
   email: string | null;
   sort_order: number;
-  tier: number; // 1 = Guides, 2 = Student team
+  tier: number; // 1 = Mentor, 2 = Faculty, 3 = Student team
 }
 
 export type ResourceType = 'view-link' | 'doc' | 'slides' | 'recording' | 'other';
